@@ -175,48 +175,97 @@ def _banner_print(text: str):
         _log(f"  -> stderr failed: {e}")
 
 
-def _send_via_gateway_runner(channel: str, text: str) -> bool:
-    """Try sending text through the live Gateway adapter. Returns True on success."""
+async def _dingtalk_openapi_send(chat_id: str, text: str) -> bool:
+    """DingTalk OpenAPI batchSend fallback — async, callable from event loop."""
+    client_id = os.environ.get("DINGTALK_CLIENT_ID", "")
+    client_secret = os.environ.get("DINGTALK_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        return False
     try:
-        from gateway.run import _gateway_runner_ref
-    except ImportError:
-        return False
-
-    runner = _gateway_runner_ref()
-    if runner is None:
-        return False
-
-    platform_name, _, chat_id = channel.partition(":")
-    if not chat_id:
-        # Unified fallback chain covering all platform naming conventions:
-        #   _HOME_CHANNEL — telegram, discord, feishu, dingtalk, wecom, signal, etc.
-        #   _ACCOUNT_ID  — weixin (primary identifier)
-        #   _HOME_ROOM   — matrix (room-based addressing)
-        for suffix in ("_HOME_CHANNEL", "_ACCOUNT_ID", "_HOME_ROOM"):
-            chat_id = os.environ.get(f"{platform_name.upper()}{suffix}", "")
-            if chat_id:
-                _log(f"_send_via_gateway_runner: resolved chat_id via {platform_name.upper()}{suffix}={chat_id}")
-                break
-    if not chat_id:
-        _log(f"_send_via_gateway_runner: no chat_id for channel={channel} "
-             f"(tried {platform_name.upper()}_HOME_CHANNEL/_ACCOUNT_ID/_HOME_ROOM; "
-             f"set one or pass platform:chat_id)")
-        return False
-
-    try:
-        from gateway.config import Platform
-        platform = Platform(platform_name)
+        import httpx, json as _json
+        token_resp = httpx.post(
+            "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+            json={"appKey": client_id, "appSecret": client_secret},
+            timeout=10.0,
+        )
+        token_data = token_resp.json() if token_resp.status_code < 300 else {}
+        access_token = token_data.get("accessToken", "")
+        if not access_token:
+            return False
+        msg_param = _json.dumps({"title": "Hermes", "text": text}, ensure_ascii=False)
+        send_resp = httpx.post(
+            "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+            headers={
+                "x-acs-dingtalk-access-token": access_token,
+                "Content-Type": "application/json",
+            },
+            json={
+                "robotCode": client_id,
+                "openConversationId": chat_id,
+                "msgKey": "sampleMarkdown",
+                "msgParam": msg_param,
+            },
+            timeout=10.0,
+        )
+        return send_resp.status_code < 300
     except Exception:
         return False
 
+
+def _send_via_gateway_runner(channel: str, text: str) -> bool:
+    """Try sending text through the live Gateway adapter. Returns True on success."""
+    # Step 1: import _gateway_runner_ref
+    try:
+        from gateway.run import _gateway_runner_ref
+    except ImportError as e:
+        _log(f"_send_via_gateway_runner: step=1 failed — import _gateway_runner_ref: {e}")
+        return False
+
+    # Step 2: get runner
+    runner = _gateway_runner_ref()
+    if runner is None:
+        _log("_send_via_gateway_runner: step=2 failed — runner is None (not in Gateway mode)")
+        return False
+
+    # Step 3: resolve platform + chat_id
+    platform_name, _, chat_id = channel.partition(":")
+    if not chat_id:
+        # Single-user platforms: fallback to env var (one-to-one DM, no ambiguity)
+        if platform_name in ("weixin", "telegram"):
+            for suffix in ("_HOME_CHANNEL", "_ACCOUNT_ID", "_HOME_ROOM"):
+                chat_id = os.environ.get(f"{platform_name.upper()}{suffix}", "")
+                if chat_id:
+                    _log(f"_send_via_gateway_runner: step=3 resolved chat_id via {platform_name.upper()}{suffix}={chat_id}")
+                    break
+        else:
+            _log(f"_send_via_gateway_runner: step=3 failed — multi-user platform '{platform_name}' "
+                 f"requires explicit channel=platform:chat_id, got '{channel}'")
+            return False
+    if not chat_id:
+        _log(f"_send_via_gateway_runner: step=3 failed — no chat_id for channel={channel}")
+        return False
+
+    # Step 4: construct Platform enum
+    try:
+        from gateway.config import Platform
+        platform = Platform(platform_name)
+    except Exception as e:
+        _log(f"_send_via_gateway_runner: step=4 failed — Platform('{platform_name}'): {e}")
+        return False
+
+    # Step 5: get adapter
     adapter = runner.adapters.get(platform) if hasattr(runner, "adapters") else None
     if adapter is None:
+        _log(f"_send_via_gateway_runner: step=5 failed — no adapter for platform={platform_name}")
         return False
 
+    # Step 6: check event loop
     loop = getattr(runner, "_gateway_loop", None)
     if loop is None or loop.is_closed():
+        _log(f"_send_via_gateway_runner: step=6 failed — loop is None or closed")
         return False
 
+    # Step 7: call adapter.send()
     import asyncio
     try:
         future = asyncio.run_coroutine_threadsafe(
@@ -224,8 +273,56 @@ def _send_via_gateway_runner(channel: str, text: str) -> bool:
             loop,
         )
         result = future.result(timeout=10)
-        return getattr(result, "success", False) or bool(result)
-    except Exception:
+        success = getattr(result, "success", False) or bool(result)
+        _log(f"_send_via_gateway_runner: step=7 done — success={success} platform={platform_name} chat_id={chat_id[:20]}...")
+        if success:
+            return True
+
+        # DingTalk Stream mode fallback: session_webhook may be missing for
+        # group chats or chats without a recent inbound message.  Fall back to
+        # the DingTalk OpenAPI batchSend endpoint using persistent credentials.
+        if platform_name == "dingtalk":
+            _log(f"_send_via_gateway_runner: step=7 dingtalk fallback — adapter.send failed, trying OpenAPI")
+            client_id = os.environ.get("DINGTALK_CLIENT_ID", "")
+            client_secret = os.environ.get("DINGTALK_CLIENT_SECRET", "")
+            if client_id and client_secret:
+                try:
+                    import httpx
+                    # Get access token
+                    token_resp = httpx.post(
+                        "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+                        json={"appKey": client_id, "appSecret": client_secret},
+                        timeout=10.0,
+                    )
+                    token_data = token_resp.json() if token_resp.status_code < 300 else {}
+                    access_token = token_data.get("accessToken", "")
+                    if access_token:
+                        import json as _json
+                        msg_param = _json.dumps({"title": "Hermes", "text": text}, ensure_ascii=False)
+                        send_resp = httpx.post(
+                            "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+                            headers={
+                                "x-acs-dingtalk-access-token": access_token,
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "robotCode": client_id,
+                                "openConversationId": chat_id,
+                                "msgKey": "sampleMarkdown",
+                                "msgParam": msg_param,
+                            },
+                            timeout=10.0,
+                        )
+                        ok = send_resp.status_code < 300
+                        _log(f"_send_via_gateway_runner: step=7 dingtalk OpenAPI — status={send_resp.status_code} ok={ok}")
+                        return ok
+                    else:
+                        _log(f"_send_via_gateway_runner: step=7 dingtalk OpenAPI — no accessToken")
+                except Exception as e:
+                    _log(f"_send_via_gateway_runner: step=7 dingtalk OpenAPI error: {e}")
+        return False
+    except Exception as e:
+        _log(f"_send_via_gateway_runner: step=7 failed — asyncio error: {e}")
         return False
 
 
@@ -242,6 +339,8 @@ def _run_command(rule: dict, msg: dict):
     env["TYPE"] = msg_type
     env["FROM"] = from_ep
     env["CHANNEL"] = body.get("channel", "") if isinstance(body, dict) else ""
+    env["TEXT"] = body.get("text", "") if isinstance(body, dict) else ""
+    _log(f"[_run_command] type={msg_type} from={from_ep} channel={env['CHANNEL']} command={command}")
     try:
         subprocess.Popen(
             command, shell=True,
@@ -263,6 +362,8 @@ def _process_bus_message(msg: dict):
         # Not a notification message (system message etc.), extract text for context
         raw_text = body.get("text", "") if isinstance(body, dict) else str(body) if body else ""
         text = raw_text if raw_text else json.dumps(msg, ensure_ascii=False)
+        if not isinstance(text, str):
+            text = json.dumps(text, ensure_ascii=False)
         with _msg_lock:
             _bus_messages.append(text)
         return
@@ -277,13 +378,13 @@ def _process_bus_message(msg: dict):
     has_context = rule.get("context")
     channel = body.get("channel", "") if isinstance(body, dict) else ""
 
-    # --- context: true → inject context + [channel=xxx] tag, push to Agent ---
+    # --- context: true → inject context + [channel=xxx] tag, trigger LLM ---
     if has_context:
         ctx_line = _resolve_format(rule.get("context_format", "{text}"), msg, mode="context")
         if channel:
             ctx_line += f"\n[channel={channel}]"
-        with _msg_lock:
-            _bus_messages.append(ctx_line)
+        # ── CLI immediate LLM trigger (v0.4.0 behaviour) ──
+        cli_triggered = False
         try:
             from hermes_cli.plugins import get_plugin_manager
             cli = get_plugin_manager()._cli_ref
@@ -292,8 +393,102 @@ def _process_bus_message(msg: dict):
                     cli._interrupt_queue.put(ctx_line)
                 else:
                     cli._pending_input.put(ctx_line)
+                cli_triggered = True
         except Exception:
             pass
+
+        # ── Gateway immediate LLM trigger ──
+        global _gateway_trigger_in_progress
+        _gw_env = os.environ.get("_HERMES_GATEWAY", "0")
+        _log(f"[gw-trigger] pre-check: channel={channel!r} guard={_gateway_trigger_in_progress} _HERMES_GATEWAY={_gw_env}")
+
+        gw_triggered = False
+        if channel and not _gateway_trigger_in_progress and _gw_env == "1":
+            _log("[gw-trigger] step=0 conditions met, entering trigger chain")
+
+            try:
+                from gateway.run import _gateway_runner_ref
+                _log("[gw-trigger] step=1 ok — import _gateway_runner_ref")
+            except Exception as e:
+                _log(f"[gw-trigger] step=1 failed — import _gateway_runner_ref: {e}")
+                _gateway_runner_ref = None
+
+            runner = _gateway_runner_ref() if _gateway_runner_ref else None
+            if runner is None:
+                _log("[gw-trigger] step=2 failed — runner is None")
+            else:
+                _log("[gw-trigger] step=2 ok — runner obtained")
+
+                # Step 3: resolve platform + chat_id
+                platform_name, _, chat_id = channel.partition(":")
+                if not chat_id:
+                    if platform_name in ("weixin", "telegram"):
+                        for suffix in ("_HOME_CHANNEL", "_ACCOUNT_ID", "_HOME_ROOM"):
+                            chat_id = os.environ.get(f"{platform_name.upper()}{suffix}", "")
+                            if chat_id:
+                                _log(f"[gw-trigger] step=3 ok — chat_id via {platform_name.upper()}{suffix}={chat_id}")
+                                break
+                    else:
+                        _log(f"[gw-trigger] step=3 failed — multi-user platform '{platform_name}' "
+                             f"requires explicit channel=platform:chat_id, got '{channel}'")
+                if not chat_id:
+                    _log(f"[gw-trigger] step=3 failed — no chat_id for platform={platform_name}")
+                else:
+                    try:
+                        import asyncio as _asyncio
+                        from gateway.config import Platform
+                        from gateway.session import SessionSource
+                        from gateway.platforms.base import MessageEvent
+
+                        platform = Platform(platform_name)
+                        _log(f"[gw-trigger] step=4 ok — Platform({platform_name})")
+
+                        source = SessionSource(platform=platform, chat_id=chat_id, user_id=chat_id)
+                        _log(f"[gw-trigger] step=5 ok — SessionSource user_id={chat_id[:20]}...")
+
+                        clean_text = re.sub(r"\n?\[channel=[^\]]+\]", "", ctx_line).strip()
+                        event = MessageEvent(text=clean_text, source=source)
+                        _log(f"[gw-trigger] step=6 ok — MessageEvent text={clean_text[:50]}...")
+
+                        adapter = runner.adapters.get(platform) if hasattr(runner, "adapters") else None
+                        if adapter is None:
+                            _log(f"[gw-trigger] step=5b failed — no adapter for platform={platform_name}")
+                        else:
+                            _log(f"[gw-trigger] step=5b ok — adapter obtained for {platform_name}")
+
+                            runner_loop = getattr(runner, "_gateway_loop", None)
+                            if runner_loop is None or runner_loop.is_closed():
+                                _log("[gw-trigger] step=6 failed — runner_loop None or closed")
+                            else:
+                                _log("[gw-trigger] step=6 ok — runner_loop available")
+
+                                async def _trigger():
+                                    _gateway_trigger_in_progress = True
+                                    try:
+                                        response = await runner._handle_message(event)
+                                        _log(f"[gw-trigger] step=9 ok — _handle_message response={len(response) if response else 0} chars")
+                                        if response:
+                                            result = await adapter.send(chat_id=chat_id, content=response)
+                                            ok = getattr(result, "success", False) or bool(result)
+                                            if not ok and platform_name == "dingtalk":
+                                                ok = await _dingtalk_openapi_send(chat_id, response)
+                                            _log(f"[gw-trigger] step=10 done — send ok={ok}")
+                                    except Exception as e:
+                                        _log(f"[gw-trigger] step=9-10 failed — {e}")
+                                    finally:
+                                        _gateway_trigger_in_progress = False
+
+                            _asyncio.run_coroutine_threadsafe(_trigger(), runner_loop)
+                            _log("[gw-trigger] step=8 ok — coroutine submitted to loop")
+                            gw_triggered = True
+                    except Exception as e:
+                        _log(f"[gw-trigger] step=4-6 failed — {e}")
+
+        # Gateway mode: gw-trigger handles full pipeline (LLM + push).
+        # CLI mode: inject context for LLM awareness.
+        if not gw_triggered:
+            with _msg_lock:
+                _bus_messages.append(ctx_line)
 
     # --- print: true → Gateway adapter push (channel) or terminal output ---
     elif rule.get("print"):
@@ -370,9 +565,25 @@ def on_session_start(**kwargs):
 
 
 def _build_platform_context() -> str | None:
-    """Detect Gateway platform from *_HOME_CHANNEL env vars. Zero hermes-agent dependency."""
+    """Detect Gateway platform from session contextvars (dynamic), fallback to HOME_CHANNEL env."""
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return None
+
+    # Dynamic: read current session's platform + chat_id from per-task contextvars.
+    # Set by GatewayRunner._set_session_env() before each agent turn.
+    # Contextvars are concurrency-safe — concurrent sessions never cross-talk.
+    try:
+        from gateway.session_context import get_session_env
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if platform and chat_id:
+            return (f"[channel={platform}:{chat_id}]\n"
+                    f"(When using notify-hermes to other agents, "
+                    f"always pass --channel {platform}:{chat_id})")
+    except ImportError:
+        pass
+
+    # Fallback: static HOME_CHANNEL env vars (CLI / cron / no active session)
     for key, label in [
         ("FEISHU_HOME_CHANNEL", "feishu"),
         ("WECOM_HOME_CHANNEL", "wecom"),
@@ -382,7 +593,9 @@ def _build_platform_context() -> str | None:
     ]:
         ch = os.environ.get(key)
         if ch:
-            return f"[Gateway] platform={label}, channel={ch}"
+            return (f"[channel={label}:{ch}]\n"
+                    f"(When using notify-hermes to other agents, "
+                    f"always pass --channel {label}:{ch})")
     return None
 
 
@@ -412,73 +625,6 @@ def on_pre_llm_call(**kwargs):
 
     if not msgs:
         return None
-
-    # ── Gateway immediate LLM trigger ──
-    # When running under Gateway, context messages carrying a channel tag
-    # can trigger an instant agent turn by injecting a synthetic MessageEvent
-    # into the Gateway's message handling pipeline.  This avoids waiting for
-    # the next user message.
-    global _gateway_trigger_in_progress
-    if (
-        not _gateway_trigger_in_progress
-        and os.environ.get("_HERMES_GATEWAY") == "1"
-    ):
-        try:
-            from gateway.run import _gateway_runner_ref
-            runner = _gateway_runner_ref()
-        except Exception:
-            runner = None
-
-        if runner is not None:
-            # Extract channel from the first context message that carries one
-            channel = None
-            for m in msgs:
-                match = re.search(r"\[channel=([^\]]+)\]", m)
-                if match:
-                    channel = match.group(1)
-                    break
-
-            if channel:
-                try:
-                    import asyncio as _asyncio
-                    from gateway.config import Platform
-                    from gateway.session import SessionSource
-                    from gateway.platforms.base import MessageEvent
-
-                    # Parse channel tag: platform[:chat_id]
-                    platform_name, _, chat_id = channel.partition(":")
-                    if not chat_id:
-                        # Single-user platform: try env var fallback chain
-                        for suffix in ("_HOME_CHANNEL", "_ACCOUNT_ID", "_HOME_ROOM"):
-                            chat_id = os.environ.get(f"{platform_name.upper()}{suffix}", "")
-                            if chat_id:
-                                break
-
-                    source = SessionSource(
-                        platform=Platform(platform_name),
-                        chat_id=chat_id,
-                    )
-
-                    # Build a clean notification text (strip [channel=xxx] tags)
-                    text = "\n".join(
-                        re.sub(r"\n?\[channel=[^\]]+\]", "", m)
-                        for m in msgs
-                    ).strip()
-
-                    event = MessageEvent(text=text, source=source)
-
-                    async def _trigger():
-                        _gateway_trigger_in_progress = True
-                        try:
-                            await runner._handle_message(event)
-                        finally:
-                            _gateway_trigger_in_progress = False
-
-                    runner_loop = getattr(runner, "_gateway_loop", None)
-                    if runner_loop is not None and not runner_loop.is_closed():
-                        _asyncio.run_coroutine_threadsafe(_trigger(), runner_loop)
-                except Exception:
-                    pass  # Never block the hook chain
 
     return {"context": "\n".join(msgs)}
 

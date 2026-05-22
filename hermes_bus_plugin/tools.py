@@ -37,8 +37,13 @@ BUS_STATUS = {
 }
 
 
-def handle_bus_send(target: str, msg_type: str, text: str, **kwargs) -> str:
+def handle_bus_send(_tool_args: dict | None = None, **kwargs) -> str:
     """Send a message via the bus."""
+    if _tool_args is None:
+        _tool_args = {}
+    target = _tool_args.get("target", "")
+    msg_type = _tool_args.get("type", "")
+    text = _tool_args.get("text", "")
     import subprocess
     result = subprocess.run(
         ["notify-hermes", "--to", target, "--type", msg_type, text],
@@ -49,7 +54,7 @@ def handle_bus_send(target: str, msg_type: str, text: str, **kwargs) -> str:
     return f"Sent {msg_type} to {target}: {text[:60]}"
 
 
-def handle_bus_status(**kwargs) -> str:
+def handle_bus_status(_tool_args: dict | None = None, **kwargs) -> str:
     """Check if bus socket exists and list registered endpoints."""
     import os, json, socket, struct
     home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
@@ -92,7 +97,7 @@ BUS_INFO = {
 }
 
 
-def handle_bus_info(**kwargs) -> str:
+def handle_bus_info(_tool_args: dict | None = None, **kwargs) -> str:
     """Show current bus connection info."""
     import os, json, socket, struct
     home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
