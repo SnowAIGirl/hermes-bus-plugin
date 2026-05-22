@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 880" width="100%" height="100%" style="background:#020617;font-family:JetBrains Mono,monospace;">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+    <marker id="arr-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/>
+    </marker>
+    <marker id="arr-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#fb923c"/>
+    </marker>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+  </defs>
+
+  <rect width="1100" height="880" fill="url(#grid)"/>
+
+  <!-- Title -->
+  <text x="30" y="30" fill="#22d3ee" font-size="13" font-weight="bold">Hermes Bus Ecosystem</text>
+  <text x="30" y="48" fill="#64748b" font-size="10">Three-package architecture — hermes-bus / hermes-notify / hermes-bus-plugin</text>
+
+  <!-- Layer separators -->
+  <text x="30" y="78" fill="#64748b" font-size="9">CLI / User Space</text>
+  <line x1="30" y1="84" x2="1070" y2="84" stroke="#1e293b" stroke-width="1"/>
+
+  <text x="30" y="248" fill="#64748b" font-size="9">Transport Layer</text>
+  <line x1="30" y1="254" x2="1070" y2="254" stroke="#1e293b" stroke-width="1"/>
+
+  <text x="30" y="440" fill="#64748b" font-size="9">Agent / Plugin Layer</text>
+  <line x1="30" y1="446" x2="1070" y2="446" stroke="#1e293b" stroke-width="1"/>
+
+  <text x="30" y="700" fill="#64748b" font-size="9">Gateway / Platform Layer</text>
+  <line x1="30" y1="706" x2="1070" y2="706" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- === hermes-notify: notify-hermes (top left) === -->
+  <rect x="60" y="100" width="240" height="120" rx="8" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="180" y="126" fill="#34d399" font-size="12" font-weight="bold" text-anchor="middle">notify-hermes</text>
+  <text x="180" y="145" fill="#94a3b8" font-size="9" text-anchor="middle">Publish message to bus</text>
+  <text x="180" y="162" fill="#94a3b8" font-size="8" text-anchor="middle">--type task_done --from worker-alpha</text>
+  <text x="180" y="180" fill="#94a3b8" font-size="8" text-anchor="middle">--channel feishu:oc_xxx</text>
+  <text x="180" y="202" fill="#34d399" font-size="8" text-anchor="middle">hermes-notify</text>
+
+  <!-- === hermes-notify: notify-agent (top center) === -->
+  <rect x="380" y="100" width="240" height="120" rx="8" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="500" y="126" fill="#34d399" font-size="12" font-weight="bold" text-anchor="middle">notify-agent</text>
+  <text x="500" y="145" fill="#94a3b8" font-size="9" text-anchor="middle">Agent-to-agent messenger</text>
+  <text x="500" y="162" fill="#94a3b8" font-size="8" text-anchor="middle">Sends to tmux session by name</text>
+  <text x="500" y="180" fill="#94a3b8" font-size="8" text-anchor="middle">Carries [channel:...] tag</text>
+  <text x="500" y="202" fill="#34d399" font-size="8" text-anchor="middle">hermes-notify</text>
+
+  <!-- === hermes-bus daemon (transport) === -->
+  <rect x="280" y="280" width="300" height="110" rx="8" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="430" y="310" fill="#fb923c" font-size="13" font-weight="bold" text-anchor="middle">hermes-bus</text>
+  <text x="430" y="330" fill="#94a3b8" font-size="9" text-anchor="middle">Unix Socket Message Daemon</text>
+  <text x="430" y="350" fill="#94a3b8" font-size="8" text-anchor="middle">Point-to-point / broadcast routing</text>
+  <text x="430" y="370" fill="#fb923c" font-size="8" text-anchor="middle">body: {text, type, channel, from}</text>
+
+  <!-- Gateway endpoint registered on bus -->
+  <rect x="650" y="295" width="210" height="80" rx="6" fill="rgba(120, 53, 15, 0.2)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,4"/>
+  <text x="755" y="320" fill="#fbbf24" font-size="10" font-weight="bold" text-anchor="middle">hermes-bus-gateway</text>
+  <text x="755" y="340" fill="#94a3b8" font-size="8" text-anchor="middle">Gateway endpoint on bus</text>
+  <text x="755" y="358" fill="#94a3b8" font-size="7" text-anchor="middle">_HERMES_GATEWAY=1</text>
+
+  <!-- === tmux sessions (right side) === -->
+  <rect x="770" y="100" width="180" height="65" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+  <text x="860" y="125" fill="white" font-size="11" font-weight="bold" text-anchor="middle">lead-agent</text>
+  <text x="860" y="145" fill="#94a3b8" font-size="8" text-anchor="middle">tmux session (claude)</text>
+
+  <rect x="770" y="178" width="180" height="65" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+  <text x="860" y="203" fill="white" font-size="11" font-weight="bold" text-anchor="middle">worker-alpha</text>
+  <text x="860" y="223" fill="#94a3b8" font-size="8" text-anchor="middle">tmux session (claude)</text>
+
+  <!-- === hermes-bus-plugin (center) === -->
+  <rect x="80" y="480" width="360" height="190" rx="8" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="260" y="510" fill="#22d3ee" font-size="12" font-weight="bold" text-anchor="middle">hermes-bus-plugin</text>
+  <text x="260" y="530" fill="#94a3b8" font-size="9" text-anchor="middle">Hermes Agent Plugin (hooks)</text>
+  <text x="260" y="552" fill="#94a3b8" font-size="8" text-anchor="middle">_process_bus_message()</text>
+  <text x="260" y="572" fill="#94a3b8" font-size="8" text-anchor="middle">├─ context: true  → LLM + [channel=xxx] tag</text>
+  <text x="260" y="590" fill="#94a3b8" font-size="8" text-anchor="middle">├─ print: true    → terminal / adapter.send()</text>
+  <text x="260" y="608" fill="#94a3b8" font-size="8" text-anchor="middle">└─ command        → subprocess (CHANNEL env)</text>
+  <text x="260" y="628" fill="#94a3b8" font-size="8" text-anchor="middle">on_pre_llm_call() → inject platform ctx</text>
+  <text x="260" y="652" fill="#22d3ee" font-size="8" text-anchor="middle">Zero hermes-agent code changes</text>
+
+  <!-- === Channel routing detail === -->
+  <rect x="500" y="500" width="280" height="150" rx="6" fill="rgba(136, 19, 55, 0.3)" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4"/>
+  <text x="510" y="520" fill="#fb7185" font-size="9" font-weight="bold">Channel Routing</text>
+  <text x="510" y="538" fill="#94a3b8" font-size="8">body.channel = "feishu:oc_xxx"</text>
+
+  <text x="510" y="558" fill="#22d3ee" font-size="7" font-weight="bold">print branch:</text>
+  <text x="620" y="558" fill="#94a3b8" font-size="7">_gateway_runner_ref()</text>
+  <text x="620" y="572" fill="#94a3b8" font-size="7">→ adapter.send(chat_id, text)</text>
+
+  <text x="510" y="592" fill="#22d3ee" font-size="7" font-weight="bold">context branch:</text>
+  <text x="620" y="592" fill="#94a3b8" font-size="7">LLM context injection</text>
+  <text x="620" y="606" fill="#94a3b8" font-size="7">→ "[channel=feishu:oc_xxx]"</text>
+
+  <text x="510" y="635" fill="#fb7185" font-size="8">Zero hermes-agent code changes</text>
+
+  <!-- === Gateway + Adapters (bottom) === -->
+  <rect x="60" y="730" width="380" height="110" rx="8" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="250" y="758" fill="#fbbf24" font-size="12" font-weight="bold" text-anchor="middle">Gateway Runner</text>
+  <text x="250" y="780" fill="#94a3b8" font-size="9" text-anchor="middle">Single process — adapters per platform</text>
+  <text x="250" y="800" fill="#fbbf24" font-size="8" text-anchor="middle">_gateway_runner_ref() → adapters[platform]</text>
+
+  <!-- Platform adapter boxes -->
+  <rect x="500" y="740" width="100" height="40" rx="4" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+  <text x="550" y="764" fill="white" font-size="9" text-anchor="middle">WeChat</text>
+
+  <rect x="615" y="740" width="100" height="40" rx="4" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+  <text x="665" y="764" fill="white" font-size="9" text-anchor="middle">Feishu</text>
+
+  <rect x="730" y="740" width="100" height="40" rx="4" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+  <text x="780" y="764" fill="white" font-size="9" text-anchor="middle">WeCom</text>
+
+  <rect x="845" y="740" width="100" height="40" rx="4" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+  <text x="895" y="764" fill="white" font-size="9" text-anchor="middle">DingTalk</text>
+
+  <text x="550" y="800" fill="#475569" font-size="8" text-anchor="middle">Users on any connected platform</text>
+
+  <!-- === ARROWS === -->
+
+  <!-- notify-hermes → hermes-bus -->
+  <line x1="180" y1="220" x2="380" y2="290" stroke="#34d399" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="270" y="245" fill="#64748b" font-size="8" text-anchor="middle">sends message via socket</text>
+
+  <!-- notify-agent → tmux sessions -->
+  <line x1="380" y1="130" x2="768" y2="130" stroke="#34d399" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="580" y="123" fill="#64748b" font-size="8" text-anchor="middle">direct keystrokes to tmux pane</text>
+
+  <!-- Agent process → notify-hermes → hermes-bus → bus-plugin (bus routing path) -->
+  <text x="860" y="250" fill="#64748b" font-size="7" text-anchor="middle">agent calls</text>
+  <text x="860" y="262" fill="#64748b" font-size="7" text-anchor="middle">notify-hermes</text>
+  <line x1="860" y1="270" x2="580" y2="325" stroke="#64748b" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#arr)"/>
+
+  <!-- hermes-bus → hermes-bus-plugin (agent sessions) -->
+  <line x1="430" y1="390" x2="260" y2="478" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+
+  <!-- hermes-bus → hermes-bus-gateway -->
+  <line x1="580" y1="335" x2="648" y2="335" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="615" y="325" fill="#64748b" font-size="7" text-anchor="middle">routes</text>
+
+  <!-- hermes-bus-gateway → Gateway Runner (downstream) -->
+  <line x1="755" y1="375" x2="755" y2="460" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arr)"/>
+  <text x="765" y="420" fill="#64748b" font-size="7">Gateway</text>
+  <text x="765" y="432" fill="#64748b" font-size="7">process</text>
+  <text x="380" y="425" fill="#64748b" font-size="8" text-anchor="middle">delivers message</text>
+
+  <!-- Dependency: bus-plugin → hermes-bus + hermes-notify -->
+  <line x1="200" y1="478" x2="160" y2="396" stroke="#475569" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+  <text x="155" y="435" fill="#475569" font-size="7" text-anchor="end">depends on</text>
+  <line x1="260" y1="478" x2="500" y2="220" stroke="#475569" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+  <text x="500" y="345" fill="#475569" font-size="7">depends on (CLI tools)</text>
+
+  <!-- bus-plugin internal: print → channel routing -->
+  <line x1="440" y1="550" x2="498" y2="550" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+  <text x="465" y="543" fill="#64748b" font-size="7" text-anchor="middle">channel set?</text>
+
+  <!-- bus-plugin → Gateway -->
+  <line x1="250" y1="670" x2="250" y2="728" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arr-cyan)"/>
+
+  <!-- Gateway → platform adapters -->
+  <line x1="440" y1="756" x2="498" y2="756" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="600" y1="756" x2="613" y2="756" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="715" y1="756" x2="728" y2="756" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="830" y1="756" x2="843" y2="756" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- === LEGEND === -->
+  <text x="30" y="860" fill="white" font-size="10" font-weight="bold">Legend</text>
+
+  <rect x="30" y="868" width="14" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+  <text x="50" y="876" fill="#94a3b8" font-size="8">hermes-notify (CLI tools)</text>
+
+  <rect x="230" y="868" width="14" height="10" rx="2" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1"/>
+  <text x="250" y="876" fill="#94a3b8" font-size="8">hermes-bus (transport)</text>
+
+  <rect x="430" y="868" width="14" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+  <text x="450" y="876" fill="#94a3b8" font-size="8">hermes-bus-plugin (routing)</text>
+
+  <rect x="660" y="868" width="14" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+  <text x="680" y="876" fill="#94a3b8" font-size="8">Gateway adapters</text>
+
+  <rect x="840" y="868" width="14" height="10" rx="2" fill="transparent" stroke="#fb7185" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="860" y="876" fill="#94a3b8" font-size="8">Channel routing</text>
+</svg>

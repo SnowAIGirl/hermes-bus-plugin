@@ -1,0 +1,35 @@
+[project]
+name = "hermes-bus-plugin"
+version = "0.5.0"
+description = "Hermes bus integration plugin — auto-start, auto-register, message injection, bus tools"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "LinQuan & Snow (AI Girl)", email = "i@linquan.name"}]
+requires-python = ">=3.10"
+dependencies = ["hermes-bus>=0.5.0", "hermes-notify>=0.5.0"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+homepage = "https://github.com/mlinquan/hermes-bus-plugin"
+repository = "https://github.com/mlinquan/hermes-bus-plugin"
+
+[project.entry-points."hermes_agent.plugins"]
+hermes-bus-plugin = "hermes_bus_plugin"
+
+[tool.setuptools.packages.find]
+include = ["hermes_bus_plugin*"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,14 @@
+name: hermes-bus-plugin
+version: 1.0.0
+description: Hermes bus integration — lifecycle management, external message injection, progress notification
+author: LinQuan & Snow (AI Girl)
+
+provides_tools:
+  - bus_send
+  - bus_status
+  - bus_info
+
+provides_hooks:
+  - pre_llm_call
+  - post_tool_call
+  - on_session_start

@@ -1,0 +1,91 @@
+# ============================================================
+# Hermes Bus Rules
+# ============================================================
+# Message routing rules, processed by hermes-bus-plugin.
+#
+# Each rule defines actions on message match:
+#   print          — print to terminal
+#   print_format   — template or script for terminal output
+#   context        — inject into LLM context + push to Agent
+#   context_format — template or script for context/push text
+#   command        — shell command to execute (env: MESSAGE/TYPE/FROM)
+#
+# Logic:
+#   context:true  → inject + push (print is ignored)
+#   print:true    → terminal output only (when context is NOT true)
+#   command       → always executed if defined
+# ============================================================
+
+callbacks:
+  # --- Notification only ---
+  - match_type: ack
+    print: true
+    context: false
+
+  # --- Silent context injection (token-heavy — use sparingly) ---
+  - match_type: task_start
+    print: false
+    context: true
+    context_format: "📬 {from} started: {text}"
+
+  - match_type: progress
+    print: false
+    context: true
+    context_format: "📬 {from} progress: {text}"
+
+  # --- Audio + context + terminal ---
+  - match_type: task_done
+    print: true
+    print_format: "{color:bold_green}✔ {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"
+    context: true
+    context_format: "📬 {from} completed: {text}"
+    command: "~/.hermes/scripts/play-notify-sound"
+
+  - match_type: plan_ready
+    print: true
+    print_format: "{color:bold_yellow}📋 {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"
+    context: true
+    context_format: "📬 {from} plan ready: {text}"
+    command: "~/.hermes/scripts/play-notify-sound"
+
+  - match_type: task_error
+    print: true
+    print_format: "{color:bold_red}✖ {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"
+    context: true
+    context_format: "📬 {from} error: {text}"
+    command: "~/.hermes/scripts/play-notify-sound"
+
+  - match_type: need_decision
+    print: true
+    print_format: "{color:bold_magenta}⚠ {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"
+    context: true
+    context_format: "📬 {from} needs decision: {text}"
+    command: "~/.hermes/scripts/play-notify-sound"
+
+# Available print_format / context_format placeholders:
+#   {from}           — sender name
+#   {text}           — message body text
+#   {type}           — message type
+#   {ts}             — Unix timestamp
+#   {ts:strftime}    — formatted time, e.g. {ts:%Y-%m-%d %H:%M:%S}
+#   {color:name}     — ANSI foreground (black/red/green/yellow/blue/magenta/cyan/white,
+#                       prefix bold_ for bold variant)
+#   {bold}           — bold text
+#   {reset}          — reset all styles
+#
+# Script support:
+#   If print_format / context_format starts with ~ or / and points to an
+#   executable file, the script is run with FROM / TYPE / TEXT as env vars
+#   and its stdout is used as the rendered output (supports ANSI colors).
+
+# ------------------------------------------------------------
+# Sender aliases: tmux session → display name
+# notify-hermes auto-detects current tmux session and maps to FROM
+# ------------------------------------------------------------
+session_aliases:
+  claude-tl: TL
+  claude-frontend: Frontend
+  claude-backend: Backend
+  claude-python: Python
+
+default_sender: notify-agent
