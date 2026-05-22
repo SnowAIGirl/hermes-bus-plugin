@@ -39,7 +39,7 @@ The plugin uses the title set by `/title` as the bus endpoint name.
 | Start bus daemon | Plugin load | Ensures hermes-bus is running |
 | Register listener | Plugin load | Opens a bus endpoint for incoming messages |
 | Print notifications | On bus message | `print: true` → terminal (only when context is NOT true) |
-| Inject context + push | On bus message | `context: true` → inject into LLM context + push to Agent via `pending_input` (**overrides print**, token-heavy — use sparingly) |
+| Inject context + push | On bus message | `context: true` → dual-mode LLM trigger: **Gateway** — gw-trigger creates synthetic `MessageEvent` → `adapter.handle_message` → full agent pipeline → LLM response pushed to chat platform via adapter. **CLI** — `_interrupt_queue` / `_pending_input` pushes to agent terminal. In both modes, context injection is skipped when the trigger fires to avoid double processing (**overrides print**, token-heavy — use sparingly) |
 | Execute command | On bus message | `command` → async subprocess (audio, scripts, etc.) — runs inside Hermes process, no external daemon needed |
 
 ## Provided Tools
@@ -227,11 +227,14 @@ The `--channel` parameter enables reply routing across chat platforms. It flows 
 
 | Value | Resolves to |
 |-------|-------------|
+| `weixin` | WeChat, specific chat |
 | `feishu:oc_abc123` | Feishu, specific chat `oc_abc123` |
 | `wecom:ww456` | WeCom, specific chat `ww456` |
 | `dingtalk:cid789` | DingTalk, specific chat `cid789` |
 | `feishu` | Feishu, fallback to `FEISHU_HOME_CHANNEL` env var |
 | `wecom` | WeCom, fallback to `WECOM_HOME_CHANNEL` env var |
+| `weixin` | WeChat, fallback to `WEIXIN_HOME_CHANNEL` env var |
+| `dingtalk` | DingTalk, fallback to `DINGTALK_HOME_CHANNEL` env var |
 
 #### Resolution logic
 
@@ -266,7 +269,9 @@ Bus message arrives
   │
   ├─ context: true
   │   └─ Render context_format → queue for on_pre_llm_call() injection
-  │      → push to Agent via pending_input (triggers Agent turn)
+  │      → If body.channel is set: Gateway immediate LLM trigger
+  │         (synthetic MessageEvent → _handle_message → agent pipeline
+  │          → LLM response pushed to chat platform via adapter.send)
   │      ⚠️ print is IGNORED when context is true
   │
   ├─ print: true (context is false, OR runs alongside context)
@@ -278,7 +283,7 @@ Bus message arrives
   └─ command (always executed if defined)
       └─ subprocess.Popen(shell=True)
          Env vars: MESSAGE (full JSON), TYPE, FROM, CHANNEL, TEXT, TS
-         → Example: play-notify-sound, gateway-forward
+         → Example: play-notify-sound
 ```
 
 #### Env vars available to command scripts
@@ -316,10 +321,11 @@ Worker agent receives directive via bus, starts work
   │  notify-hermes --to lead-agent --type task_done "X complete" --channel feishu:oc_abc123
   ▼
 Bus routes task_done → lead-agent endpoint
-  │  bus-rules.yaml: print=true + context=true + command=play-notify-sound;gateway-forward
-  │  command branch → CHANNEL=feishu:oc_abc123 → gateway-forward → adapter.send()
+  │  bus-rules.yaml: print=true + context=true + command=play-notify-sound
+  │  context branch → channel=feishu:oc_abc123 → gw-trigger → _handle_message
+  │  → agent pipeline → LLM response → adapter.send() to Feishu
   ▼
-Original user receives reply in Feishu: "X complete"
+Original user receives LLM-processed reply in Feishu: "X complete"
 ```
 
 **Key principle:** `channel` is an opaque routing token. Agents pass it through without interpreting it. The bus-plugin handles final delivery. Agent reasoning stays simple — echo the channel you received.
@@ -375,9 +381,9 @@ tmux new-session -d -s worker-beta  'claude'
    → bus-rules.yaml: print=true + context=true + command
    → Terminal: "worker-alpha completed: Auth middleware refactor complete..."
    → command: play-notify-sound (audio cue)
-   → command: gateway-forward → CHANNEL=feishu:oc_abc123
-     → adapter.send(chat_id="oc_abc123", content="...")
-   → User sees in Feishu: "Auth middleware refactor complete. 5/5 endpoints migrated"
+   → context: gw-trigger → _handle_message → agent pipeline
+     → LLM response pushed to Feishu via adapter.send()
+   → User sees in Feishu: LLM-processed completion summary
 
 ── 5. Status check via bus (zero I/O) ─────────────────────────────
    notify-hermes --to worker-alpha --type ack "Status check: still alive?"
@@ -390,11 +396,29 @@ tmux new-session -d -s worker-beta  'claude'
 Gateway sets channel ──→ Agent echoes channel ──→ Bus carries channel
 (incoming platform msg)  (in all notify-hermes)   (in message body)
 
-Bus-plugin receives ──→ command script reads CHANNEL ──→ adapter.send()
-(body.channel preserved)  (env var injection)            (reply to user)
+Bus-plugin receives ──→ gw-trigger (context) or _send_via_gateway_runner (print)
+(body.channel preserved)  → adapter.send() (reply to user)
 ```
 
 **The channel token never changes.** Every agent passes it through unmodified. Only the bus-plugin (at final delivery) acts on it.
+
+### 7. DingTalk OpenAPI Fallback
+
+DingTalk Stream mode provides per-message `session_webhook` URLs for outbound delivery. When no recent inbound message exists in the current Gateway session (group chats without prior @mention, or Gateway restart), the webhook is unavailable and `adapter.send()` fails silently.
+
+The bus-plugin's `_send_via_gateway_runner` and gw-trigger both fall back to the DingTalk OpenAPI `batchSend` endpoint when the adapter path fails:
+
+```
+adapter.send() fails (no session_webhook)
+  → POST https://api.dingtalk.com/v1.0/oauth2/accessToken
+    (appKey=DINGTALK_CLIENT_ID, appSecret=DINGTALK_CLIENT_SECRET)
+  → POST https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend
+    (openConversationId=chat_id, msgKey=sampleMarkdown)
+```
+
+Zero additional SDK dependencies — uses `httpx` (already present in Hermes venv). Enabled automatically when `DINGTALK_CLIENT_ID` and `DINGTALK_CLIENT_SECRET` are set in `~/.hermes/.env`.
+
+All other IM platforms (WeCom, Feishu, Slack, Discord, Telegram, WeChat) use persistent API credentials for `send()` and do not need this fallback.
 
 ---
 
