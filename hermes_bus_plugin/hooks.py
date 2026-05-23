@@ -355,6 +355,8 @@ def _run_command(rule: dict, msg: dict):
 
 def _process_bus_message(msg: dict):
     """Process a single bus message: print, context injection, command execution."""
+    if msg.get("type") in ("ping", "pong"):
+        return
     # Only process routed messages with a body
     body = msg.get("body", {})
     msg_type = body.get("type", None) if isinstance(body, dict) else None
