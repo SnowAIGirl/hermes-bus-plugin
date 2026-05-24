@@ -34,11 +34,17 @@ callbacks:
     context_format: "📬 {from} progress: {text}"
 
   # --- Audio + context + terminal ---
+  - match_type: task_complete
+    print: true
+    print_format: "{color:bold_yellow}📋 {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"
+    context: true
+    context_format: "📬 {from} submitted for review: {text}"
+
   - match_type: task_done
     print: true
     print_format: "{color:bold_green}✔ {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"
     context: true
-    context_format: "📬 {from} completed: {text}"
+    context_format: "📬 {from} approved: {text}"
     command: "~/.hermes/scripts/play-notify-sound"
 
   - match_type: plan_ready

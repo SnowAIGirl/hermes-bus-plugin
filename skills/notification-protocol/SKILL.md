@@ -19,7 +19,7 @@ Unified notification protocol for the Hermes bus ecosystem. Three packages work 
 notify-hermes --to <endpoint> --type <type> [--channel <platform:chat_id>] "message"
 ```
 
-Message types: `directive`, `ack`, `task_start`, `progress`, `task_done`, `plan_ready`, `task_error`, `need_decision`.
+Message types: `directive`, `ack`, `task_start`, `progress`, `task_complete`, `task_done`, `plan_ready`, `task_error`, `need_decision`.
 
 Channel format:
 - **weixin, telegram** (single-user): `platform` only — `*_HOME_CHANNEL` env var auto-fills chat_id
@@ -69,10 +69,16 @@ callbacks:
     context: true
     context_format: "📬 [directive] {from}: {text}"
 
+  - match_type: task_complete
+    print: true
+    print_format: "~/.hermes/scripts/format-bus-message"
+    context: true
+    context_format: "📬 {from} submitted for review: {text}"
+
   - match_type: task_done
     print: true
     print_format: "~/.hermes/scripts/format-bus-message"
     context: true
-    context_format: "📬 {from} completed: {text}"
+    context_format: "📬 {from} approved: {text}"
     command: "~/.hermes/scripts/play-notify-sound; ~/.hermes/scripts/gateway-forward"
 ```

@@ -104,6 +104,7 @@ RESET="\033[0m"
 
 case "$TYPE" in
   task_done)  echo -e "${GREEN}✔ ${FROM}${RESET} — ${TEXT}" ;;
+  task_complete) echo -e "${YELLOW}📋 ${FROM} 提交验收${RESET} — ${TEXT}" ;;
   task_error) echo -e "${YELLOW}✖ ${FROM} 异常${RESET}\n   ${TEXT}" ;;
   *)          echo -e "${FROM}: ${TEXT}" ;;
 esac
@@ -132,6 +133,11 @@ callbacks:
     context: true
 
   # 上下文 + 终端 + 音频
+  - match_type: task_complete
+    print: true
+    print_format: "{color:bold_yellow}📋 {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"
+    context: true
+
   - match_type: task_done
     print: true
     print_format: "{color:bold_green}✔ {from}{reset} → {text}  {color:cyan}[{ts:%H:%M:%S}]{reset}"

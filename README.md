@@ -185,7 +185,8 @@ notify-hermes --to <endpoint> --body '{"text":"hello","key":"value"}'
 
 # Examples
 notify-hermes --to hermes-bus --type ack "Acknowledged, starting work"
-notify-hermes --to hermes-bus --type task_done "All tasks complete"
+notify-hermes --to hermes-bus --type task_complete "Task finished, pending review"
+notify-hermes --to hermes-bus --type task_done "All tasks approved and complete"
 notify-hermes --to hermes-bus --type task_error --channel wecom_ops "Production outage, manual intervention needed"
 ```
 
@@ -195,7 +196,7 @@ notify-hermes --to hermes-bus --type task_error --channel wecom_ops "Production 
 |----------|-----------|---------|-------------|
 | `"message"` | `text` | — | Plain text (positional, mutually exclusive with `--body`) |
 | `--body` | *(raw JSON)* | — | Full JSON body dict (mutually exclusive with positional message) |
-| `--type` | `type` | none | Message type: `ack`, `task_start`, `progress`, `task_done`, `plan_ready`, `task_error`, `need_decision`, `directive` |
+| `--type` | `type` | none | Message type: `ack`, `task_start`, `progress`, `task_complete`, `task_done`, `plan_ready`, `task_error`, `need_decision`, `directive` |
 | `--channel` | `channel` | none | Reply routing token (see Channel Protocol below) |
 | `--from` | `from_ep` | auto-detected | Override sender name (auto-detected from tmux session via `role_map`) |
 | `--to` | *(routing)* | required | Target bus endpoint name |
@@ -210,7 +211,8 @@ notify-hermes --to hermes-bus --type task_error --channel wecom_ops "Production 
 | `ack` | Acknowledgement ("received, working") | false | true | no |
 | `task_start` | Task started | true | false | no |
 | `progress` | Intermediate progress update | true | false | no |
-| `task_done` | Task completed | true | true | yes |
+| `task_complete` | Submitted for review (worker done, awaiting L1 approval) | true | true | no |
+| `task_done` | Approved / settled (L1 confirms completion) | true | true | yes |
 | `plan_ready` | Plan ready for review | true | true | yes |
 | `task_error` | Error / escalation | true | true | yes |
 | `need_decision` | Decision needed | true | true | yes |
@@ -419,6 +421,17 @@ adapter.send() fails (no session_webhook)
 Zero additional SDK dependencies — uses `httpx` (already present in Hermes venv). Enabled automatically when `DINGTALK_CLIENT_ID` and `DINGTALK_CLIENT_SECRET` are set in `~/.hermes/.env`.
 
 All other IM platforms (WeCom, Feishu, Slack, Discord, Telegram, WeChat) use persistent API credentials for `send()` and do not need this fallback.
+
+### 8. Feishu Group Chat
+
+Feishu groups default to `FEISHU_GROUP_POLICY=allowlist` — only members in `FEISHU_GROUP_ALLOWED_USERS` can trigger the bot. To allow any group member to interact:
+
+```bash
+# ~/.hermes/.env
+FEISHU_GROUP_POLICY=open
+```
+
+Without this, the bot ignores all group messages that don't @mention an allowlisted user.
 
 ---
 
