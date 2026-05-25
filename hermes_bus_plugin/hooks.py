@@ -380,11 +380,9 @@ def _process_bus_message(msg: dict):
     has_context = rule.get("context")
     channel = body.get("channel", "") if isinstance(body, dict) else ""
 
-    # --- context: true → inject context + [channel=xxx] tag, trigger LLM ---
+    # --- context: true → inject context, trigger LLM ---
     if has_context:
         ctx_line = _resolve_format(rule.get("context_format", "{text}"), msg, mode="context")
-        if channel:
-            ctx_line += f"\n[channel={channel}]"
         # ── CLI immediate LLM trigger (v0.4.0 behaviour) ──
         cli_triggered = False
         try:
@@ -579,9 +577,7 @@ def _build_platform_context() -> str | None:
         platform = get_session_env("HERMES_SESSION_PLATFORM", "")
         chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
         if platform and chat_id:
-            return (f"[channel={platform}:{chat_id}]\n"
-                    f"(When using notify-hermes to other agents, "
-                    f"always pass --channel {platform}:{chat_id})")
+            return f"[channel={platform}:{chat_id}]"
     except ImportError:
         pass
 
@@ -595,9 +591,7 @@ def _build_platform_context() -> str | None:
     ]:
         ch = os.environ.get(key)
         if ch:
-            return (f"[channel={label}:{ch}]\n"
-                    f"(When using notify-hermes to other agents, "
-                    f"always pass --channel {label}:{ch})")
+            return f"[channel={label}:{ch}]"
     return None
 
 
