@@ -1,6 +1,6 @@
 [project]
 name = "hermes-bus-plugin"
-version = "0.6.2"
+version = "0.6.3"
 description = "Hermes bus integration plugin — auto-start, auto-register, message injection, bus tools"
 readme = "README.md"
 license = {text = "MIT"}
