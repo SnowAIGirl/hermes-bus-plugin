@@ -53,6 +53,8 @@ Channel is an opaque token. Agents pass it through unmodified. Only the bus-plug
 
 **[channel:xxx] is a routing marker, NOT message content.** When calling `notify-hermes`, put the tag in `--channel` only — never include it in the message text. Wrong: `notify-hermes "Done [channel:wechat]"`. Correct: `notify-hermes --channel wechat "Done"`.
 
+Channel self-discovery: agents extract the platform and chat_id from the system prompt **Source:** line (set by Gateway), using the format `Source: platform:chat_id`. No code-level injection is needed — agents read it from their context.
+
 ## Bus Message Format
 
 4-byte BE length prefix + JSON body:
