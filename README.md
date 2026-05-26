@@ -252,13 +252,29 @@ When the bus-plugin receives a message with `channel` set, the channel token is 
 
 ```
 incoming body.channel = "feishu:oc_abc123"
-  → agent sees the channel in context
-  → agent includes --channel feishu:oc_abc123 in its notify-hermes calls
+  → agent receives channel via notify-hermes --channel parameter and protocol rules
+  → agent includes --channel feishu:oc_abc123 in its notify-hermes reply calls
   → bus-plugin forwards reply to feishu adapter
   → user sees response in the original chat
 ```
 
 The `channel` field is **an opaque routing token**. It is never interpreted or modified by agents — they simply echo it back. Only the bus-plugin (at the final delivery point) acts on it.
+
+### Common Routing Issues
+
+**Route Loss**
+- WeChat task → result goes to CLI: the worker didn't include `--channel weixin`. Bus announcements must use `--to hermes-bus-gateway --channel <platform>`.
+- Missing chat_id for multi-user platforms: dingtalk requires `dingtalk:cid_xxx`; just `dingtalk` won't deliver.
+- Reusing old channel across platforms: the channel parameter changes when switching platforms — confirm the current session before passing it.
+
+**Chain Breakage**
+- Bus not running: `notify-hermes` exits with code 1 → restart `hermes-busd`.
+- Gateway not started: `--to hermes-bus-gateway` gets no response → fall back to CLI.
+- Missing `match_type`: messages with new types are silently dropped — check `bus-rules.yaml`.
+
+**Protocol Errors**
+- Typing instead of `notify-hermes`: typing "received" or "done" in tmux without running the bus command → message never arrives.
+- Channel mixed into message body: `--channel` is a CLI parameter, not message content.
 
 ### 4. Bus-Plugin Receive-Side Routing
 

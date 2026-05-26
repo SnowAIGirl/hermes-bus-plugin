@@ -145,6 +145,22 @@ callbacks:
     command: "afplay ~/sounds/done.mp3"
 ```
 
+### 常见路由问题
+
+**路由丢失**
+- 微信派活→结果回 CLI：工人没带 `--channel weixin`。bus 通告用 `--to hermes-bus-gateway --channel 平台`
+- 多用户缺 chat_id：dingtalk 需要 `dingtalk:cid_xxx`，只写 `dingtalk` 投不了
+- 跨平台复用旧 channel：换平台后 channel 参数变了，确认当前会话再传
+
+**链路断裂**
+- Bus 未运行：`notify-hermes` exit 1 → 重启 `hermes-busd`
+- Gateway 未启动：`--to hermes-bus-gateway` 无响应 → 回退到 CLI
+- 缺 match_type：新 type 的消息被静默丢弃，检查 `bus-rules.yaml`
+
+**协议错误**
+- 打字替代 notify-hermes：在 tmux 里打字说收到/干完了不跑总线 → 收不到
+- channel 混在正文里：`--channel` 是参数，不是消息内容
+
 ## 依赖
 
 - `hermes-bus` (pip)

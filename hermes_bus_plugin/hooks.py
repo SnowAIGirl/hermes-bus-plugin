@@ -564,36 +564,6 @@ def on_session_start(**kwargs):
     pass
 
 
-def _build_platform_context() -> str | None:
-    """Detect Gateway platform from session contextvars (dynamic), fallback to HOME_CHANNEL env."""
-    if os.environ.get("_HERMES_GATEWAY") != "1":
-        return None
-
-    # Dynamic: read current session's platform + chat_id from per-task contextvars.
-    # Set by GatewayRunner._set_session_env() before each agent turn.
-    # Contextvars are concurrency-safe — concurrent sessions never cross-talk.
-    try:
-        from gateway.session_context import get_session_env
-        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
-        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
-        if platform and chat_id:
-            return f"[channel={platform}:{chat_id}]"
-    except ImportError:
-        pass
-
-    # Fallback: static HOME_CHANNEL env vars (CLI / cron / no active session)
-    for key, label in [
-        ("FEISHU_HOME_CHANNEL", "feishu"),
-        ("WECOM_HOME_CHANNEL", "wecom"),
-        ("DINGTALK_HOME_CHANNEL", "dingtalk"),
-        ("SLACK_HOME_CHANNEL", "slack"),
-        ("WEIXIN_HOME_CHANNEL", "weixin"),
-    ]:
-        ch = os.environ.get(key)
-        if ch:
-            return f"[channel={label}:{ch}]"
-    return None
-
 
 def on_pre_llm_call(**kwargs):
     """Flush print messages to terminal + inject context messages into LLM."""
@@ -613,11 +583,6 @@ def on_pre_llm_call(**kwargs):
         else:
             msgs = list(_bus_messages)
             _bus_messages.clear()
-
-    # Inject platform context (Gateway mode)
-    platform_ctx = _build_platform_context()
-    if platform_ctx:
-        msgs.append(platform_ctx)
 
     if not msgs:
         return None
