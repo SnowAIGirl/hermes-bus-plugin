@@ -1,9 +1,10 @@
 """Hermes bus plugin — auto-start, auto-register, auto-listen.
 
-Endpoint naming:
-  1. Hermes session /title value (stable, human-readable)
-  2. Query bus for existing endpoints, pick 'hermes-bus' or first available suffix
-When /title changes, the bus endpoint re-registers with the new name.
+Endpoint naming (by priority):
+  1. HERMES_BUS_ENDPOINT env var
+  2. bus-rules.yaml → bus.endpoint
+  3. Profile name derived from HERMES_HOME (default: 'hermes-bus')
+  Gateway mode appends '-gateway' suffix.
 """
 
 import os
@@ -24,15 +25,49 @@ def _log(msg: str):
         pass
 
 
-_current_title: str = None
-_title_lock = threading.Lock()
-
 ENV_ENDPOINT = "HERMES_BUS_PLUGIN_ENDPOINT"
 ENV_SID = "HERMES_BUS_PLUGIN_SID"
 
 
+def _get_profile_name() -> str:
+    """Extract profile name from HERMES_HOME. Returns 'hermes-bus' for default profile."""
+    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    profiles_root = os.path.join(os.path.expanduser("~/.hermes"), "profiles")
+    if home.startswith(profiles_root):
+        name = os.path.basename(home)
+        if name:
+            return name
+    return "hermes-bus"
+
+
+def _get_bus_root() -> str:
+    """Return the shared bus socket root (always ~/.hermes, not profile-scoped)."""
+    return os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+
+
+def _read_config_endpoint() -> str:
+    """Read bus.endpoint from bus-rules.yaml. Returns '' if not configured."""
+    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    config_path = os.path.join(home, "bus-rules.yaml")
+    if not os.path.exists(config_path):
+        return ""
+    try:
+        import yaml
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        bus = cfg.get("bus", {})
+        if isinstance(bus, dict):
+            return str(bus.get("endpoint", "")).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _default_endpoint() -> str:
     """Return the default bus endpoint name.
+
+    Priority: HERMES_BUS_ENDPOINT env var → bus-rules.yaml bus.endpoint
+              → profile name → 'hermes-bus'.
 
     Uses three signals to detect gateway context, evaluated at call time:
     1. _HERMES_GATEWAY=1 env var (set by run.py:371)
@@ -44,13 +79,24 @@ def _default_endpoint() -> str:
 
     Must be a function, not a module-level constant.
     """
-    if os.environ.get("_HERMES_GATEWAY") == "1":
-        return "hermes-bus-gateway"
-    if "gateway.run" in sys.modules:
-        return "hermes-bus-gateway"
-    if "gateway" in sys.argv and "run" in sys.argv:
-        return "hermes-bus-gateway"
-    return "hermes-bus"
+    cfg_endpoint = os.environ.get("HERMES_BUS_ENDPOINT", "")
+    if cfg_endpoint:
+        base = cfg_endpoint
+    else:
+        yaml_endpoint = _read_config_endpoint()
+        if yaml_endpoint:
+            base = yaml_endpoint
+        else:
+            base = _get_profile_name()
+
+    is_gateway = (
+        os.environ.get("_HERMES_GATEWAY") == "1"
+        or "gateway.run" in sys.modules
+        or ("gateway" in sys.argv and "run" in sys.argv)
+    )
+    if is_gateway:
+        return f"{base}-gateway"
+    return base
 
 from .tools import BUS_SEND, BUS_STATUS, BUS_INFO, handle_bus_send, handle_bus_status, handle_bus_info
 from .hooks import (
@@ -62,20 +108,10 @@ from .hooks import (
 )
 
 
-def _get_session_title(ctx) -> str:
-    title = getattr(ctx, 'title', None) or getattr(ctx, 'session_title', None)
-    if title:
-        return str(title).strip()
-    title = os.environ.get("HERMES_SESSION_TITLE", "").strip()
-    if title:
-        return title
-    return ""
-
-
 def _query_bus_endpoints() -> set:
     """Return set of existing endpoint names from the bus. Empty on failure."""
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    sock_path = os.path.join(home, "hermes-bus.sock")
+    root = _get_bus_root()
+    sock_path = os.path.join(root, "hermes-bus.sock")
     if not os.path.exists(sock_path):
         return set()
     try:
@@ -103,11 +139,12 @@ def _query_bus_endpoints() -> set:
 
 
 def _build_endpoint(ctx) -> str:
-    """Build a unique bus endpoint name."""
-    title = _get_session_title(ctx)
-    if title:
-        return title
+    """Build a unique bus endpoint name.
 
+    Priority: HERMES_BUS_ENDPOINT env var → profile default.
+    Gateway mode appends '-gateway' suffix automatically.
+    Additional sessions get '-2', '-3', etc. to avoid collisions.
+    """
     existing = _query_bus_endpoints()
     base = _default_endpoint()
 
@@ -120,38 +157,8 @@ def _build_endpoint(ctx) -> str:
     return f"{base}-{n}"
 
 
-def _watch_title(ctx):
-    global _current_title
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    sock_path = os.path.join(home, "hermes-bus.sock")
-
-    while True:
-        time.sleep(10)
-        try:
-            title = _get_session_title(ctx)
-            with _title_lock:
-                if title and title != _current_title:
-                    new_endpoint = title
-                    if os.path.exists(sock_path):
-                        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                        s.settimeout(3)
-                        try:
-                            s.connect(sock_path)
-                            reg = json.dumps({"type": "register", "endpoint": new_endpoint}).encode()
-                            s.sendall(struct.pack(">I", len(reg)) + reg)
-                            s.close()
-                            os.environ[ENV_ENDPOINT] = new_endpoint
-                        except Exception:
-                            pass
-                if title:
-                    _current_title = title
-        except Exception:
-            pass
-
-
 def register(ctx):
     endpoint = _build_endpoint(ctx)
-    _current_title = _get_session_title(ctx)
     _log(f"register() endpoint={endpoint}")
 
     ensure_bus_running()
@@ -161,12 +168,6 @@ def register(ctx):
         kwargs={"endpoint": endpoint},
     )
     t.start()
-
-    tw = threading.Thread(
-        target=_watch_title, daemon=True, name="title-watcher",
-        args=(ctx,),
-    )
-    tw.start()
 
     os.environ[ENV_ENDPOINT] = endpoint
 

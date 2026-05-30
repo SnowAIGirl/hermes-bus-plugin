@@ -18,6 +18,10 @@ _msg_lock = threading.Lock()
 # Recursion guard: prevent on_pre_llm_call → _handle_message → LLM → on_pre_llm_call loop
 _gateway_trigger_in_progress = False
 
+# Source line inject-once guard: CLI agents need to know their endpoint,
+# but injecting every turn wastes tokens. Inject once, first LLM call.
+_source_line_injected = False
+
 # Notify config cache
 _notify_config = None
 _notify_config_mtime = 0
@@ -359,25 +363,14 @@ def _process_bus_message(msg: dict):
         return
     # Only process routed messages with a body
     body = msg.get("body", {})
-    msg_type = body.get("type", None) if isinstance(body, dict) else None
-    if not msg_type:
-        # Not a notification message (system message etc.), extract text for context
-        raw_text = body.get("text", "") if isinstance(body, dict) else str(body) if body else ""
-        text = raw_text if raw_text else json.dumps(msg, ensure_ascii=False)
-        if not isinstance(text, str):
-            text = json.dumps(text, ensure_ascii=False)
-        with _msg_lock:
-            _bus_messages.append(text)
-        return
-
     from_ep = msg.get("from", "?")
+    msg_type = body.get("type", None) if isinstance(body, dict) else None
+
     callbacks = _load_notify_config().get("callbacks", [])
     rule = _match_rule(msg_type, callbacks)
 
-    if rule is None:
-        return
-
-    has_context = rule.get("context")
+    has_context = rule.get("context") if rule else False
+    should_print = rule.get("print", True) if rule else True
     channel = body.get("channel", "") if isinstance(body, dict) else ""
 
     # --- context: true → inject context, trigger LLM ---
@@ -490,9 +483,9 @@ def _process_bus_message(msg: dict):
             with _msg_lock:
                 _bus_messages.append(ctx_line)
 
-    # --- print: true → Gateway adapter push (channel) or terminal output ---
-    elif rule.get("print"):
-        print_line = _resolve_format(rule.get("print_format", "{text}"), msg, mode="print")
+    # --- print handling (default true) ---
+    elif should_print:
+        print_line = _resolve_format(rule.get("print_format", "{text}") if rule else "{text}", msg, mode="print")
         if channel:
             # Strip ANSI escape codes for Gateway delivery, keep sender/time formatting
             clean_line = re.sub(r"\033\[[0-9;]*m", "", print_line)
@@ -504,7 +497,7 @@ def _process_bus_message(msg: dict):
             _cprint(print_line)
 
     # --- command → asynchronous execution via subprocess (always independent) ---
-    if rule.get("command"):
+    if rule and rule.get("command"):
         _run_command(rule, msg)
 
 
@@ -537,8 +530,8 @@ def ensure_bus_running():
 
 
 def _check_socket_alive() -> bool:
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    sock_path = os.path.join(home, "hermes-bus.sock")
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    sock_path = os.path.join(root, "hermes-bus.sock")
     _log(f"_check_socket_alive: {sock_path} exists={os.path.exists(sock_path)}")
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -564,7 +557,6 @@ def on_session_start(**kwargs):
     pass
 
 
-
 def on_pre_llm_call(**kwargs):
     """Flush print messages to terminal + inject context messages into LLM."""
 
@@ -584,6 +576,14 @@ def on_pre_llm_call(**kwargs):
             msgs = list(_bus_messages)
             _bus_messages.clear()
 
+    # CLI mode: inject Source line once so agents know their endpoint.
+    # (Gateway injects its own via session.py, no-op here.)
+    global _source_line_injected
+    if not _source_line_injected and os.environ.get("_HERMES_GATEWAY") != "1":
+        _source_line_injected = True
+        ep = os.environ.get("HERMES_BUS_PLUGIN_ENDPOINT", "hermes-bus")
+        msgs.insert(0, f"**Source:** CLI (endpoint: {ep})")
+
     if not msgs:
         return None
 
@@ -596,8 +596,8 @@ def on_post_tool_call(tool_name: str = "", result: str = "", **kwargs):
 
 def listen_bus(endpoint: str = "hermes-bus"):
     """Background thread: connect, register, listen."""
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    sock_path = os.path.join(home, "hermes-bus.sock")
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    sock_path = os.path.join(root, "hermes-bus.sock")
     reconnect_delay = 5
     was_connected = False
     reconnect_count = 0
@@ -651,7 +651,7 @@ def listen_bus(endpoint: str = "hermes-bus"):
                         # Delay to let TUI greeting render first
                         time.sleep(3)
                         _banner_print(f"Connected as: \033[1;31m{cur_endpoint}\033[0m{sid_part}")
-                        _banner_print("Use /title <name> to set a persistent session name\n")
+                        _banner_print("Set endpoint name in bus-rules.yaml → bus.endpoint, or HERMES_BUS_ENDPOINT env var\n")
                     was_connected = True
             except Exception as e:
                 _log(f"listen_bus: parse reply error: {e}")

@@ -26,13 +26,37 @@ hermes plugins enable hermes-bus-plugin
 
 ## Session Naming
 
-Each CLI window registers a unique bus endpoint on startup. The default endpoint is `hermes-bus` (first session), with `hermes-bus-2`, `hermes-bus-3`, etc. for additional sessions. To give your session a stable name that survives reconnection:
+Each CLI/Gateway session registers a unique bus endpoint on startup.
+
+### Default endpoint names
+
+| Profile | CLI mode | Gateway mode |
+|---------|----------|--------------|
+| default (`~/.hermes`) | `hermes-bus` | `hermes-bus-gateway` |
+| `work` (`~/.hermes/profiles/work`) | `work` | `work-gateway` |
+
+For additional CLI sessions: `hermes-bus-2`, `hermes-bus-3`, etc.
+
+### Custom endpoint name
+
+Two ways to configure, listed by priority:
+
+**1. Environment variable** (highest priority):
 
 ```bash
-/title my-agent-name
+export HERMES_BUS_ENDPOINT=my-endpoint
+# CLI → my-endpoint, Gateway → my-endpoint-gateway
 ```
 
-The plugin uses the title set by `/title` as the bus endpoint name.
+**2. Config file** — add to `$HERMES_HOME/bus-rules.yaml`:
+
+```yaml
+bus:
+  endpoint: my-endpoint
+# CLI → my-endpoint, Gateway → my-endpoint-gateway
+```
+
+If neither is set, the profile name is used as the default (e.g., default profile → `hermes-bus`).
 
 | Action | When | Description |
 |--------|------|-------------|
@@ -47,6 +71,8 @@ The plugin uses the title set by `/title` as the bus endpoint name.
 **bus_send** — send a message through the bus to any endpoint:
 ```
 bus_send(target="notifier", type="progress", text="50% done")
+# With channel for Gateway push (WeChat, Feishu, etc.):
+bus_send(target="hermes-bus-gateway", type="task_done", text="Build complete", channel="weixin:oc_abc123")
 ```
 
 **bus_status** — check bus health and connected endpoints:
@@ -59,9 +85,18 @@ bus_status()
 bus_info()
 ```
 
+### bus_send parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `target` | yes | Target bus endpoint name |
+| `type` | yes | Message type — matched against `bus-rules.yaml` `match_type` |
+| `text` | yes | Message body text |
+| `channel` | no | Push channel (`platform:chat_id`) — routes reply through Gateway adapter |
+
 ## Route Rules
 
-Messages arriving at the bus are matched against `~/.hermes/bus-rules.yaml` rules.
+Messages arriving at the bus are matched against `$HERMES_HOME/bus-rules.yaml` rules (default: `~/.hermes/bus-rules.yaml`).
 Each rule can trigger three independent actions:
 
 | Field | Behavior | Default |
@@ -187,7 +222,7 @@ notify-hermes --to <endpoint> --body '{"text":"hello","key":"value"}'
 notify-hermes --to hermes-bus --type ack "Acknowledged, starting work"
 notify-hermes --to hermes-bus --type task_complete "Task finished, pending review"
 notify-hermes --to hermes-bus --type task_done "All tasks approved and complete"
-notify-hermes --to hermes-bus --type task_error --channel wecom_ops "Production outage, manual intervention needed"
+notify-hermes --to hermes-bus --type task_error --channel wecom:ops_group "Production outage, manual intervention needed"
 ```
 
 #### Message body (constructed from CLI args)
@@ -229,7 +264,7 @@ The `--channel` parameter enables reply routing across chat platforms. It flows 
 
 | Value | Resolves to |
 |-------|-------------|
-| `weixin` | WeChat, specific chat |
+| `weixin:oc_abc123` | WeChat, specific chat `oc_abc123` |
 | `feishu:oc_abc123` | Feishu, specific chat `oc_abc123` |
 | `wecom:ww456` | WeCom, specific chat `ww456` |
 | `dingtalk:cid789` | DingTalk, specific chat `cid789` |
@@ -259,6 +294,11 @@ incoming body.channel = "feishu:oc_abc123"
 ```
 
 The `channel` field is **an opaque routing token**. It is never interpreted or modified by agents — they simply echo it back. Only the bus-plugin (at the final delivery point) acts on it.
+
+Endpoint is injected into the Source line per session type:
+- Gateway: `**Source:** Weixin (DM with user) (endpoint: hermes-bus-gateway)` — injected by `session.py` once per session
+- CLI: `**Source:** CLI (endpoint: hermes-bus)` — injected by `on_pre_llm_call` once at first LLM call
+- Agents extract the endpoint from this line for reply routing. No endpoint tag → default route is `hermes-bus`.
 
 ### Common Routing Issues
 
@@ -345,6 +385,13 @@ Bus routes task_done → lead-agent endpoint
   ▼
 Original user receives LLM-processed reply in Feishu: "X complete"
 ```
+
+**Endpoint self-discovery:** Gateway-injected Source line appears once per session:
+```
+**Source:** Weixin (DM with user) (endpoint: hermes-bus-gateway)
+```
+CLI: `**Source:** CLI (endpoint: hermes-bus)` — injected once at first LLM call.
+Agents extract `hermes-bus-gateway` as the `--to` target and the platform name as `--channel`. When no endpoint tag is present, default to `--to hermes-bus`.
 
 **Key principle:** `channel` is an opaque routing token. Agents pass it through without interpreting it. The bus-plugin handles final delivery. Agent reasoning stays simple — echo the channel you received.
 
@@ -450,6 +497,58 @@ FEISHU_GROUP_POLICY=open
 Without this, the bot ignores all group messages that don't @mention an allowlisted user.
 
 ---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HERMES_BUS_ROOT` | `~/.hermes` | Bus socket and run directory root (shared across profiles) |
+| `HERMES_BUS_ENDPOINT` | *(auto)* | Override bus endpoint name |
+| `HERMES_HOME` | `~/.hermes` | Hermes config home (may be profile-scoped) |
+
+> **Note:** `HERMES_BUS_ROOT` is separate from `HERMES_HOME`. The bus socket is always in `HERMES_BUS_ROOT` (default `~/.hermes`), while `HERMES_HOME` can point to a profile subdirectory (e.g., `~/.hermes/profiles/work`). This ensures all profiles share one bus daemon.
+
+## Restart Order
+
+After upgrading packages or modifying configuration, restart processes in this order:
+
+```
+upgrade/config change → restart Gateway → CLI sessions auto-reconnect
+```
+
+### 1. Restart Gateway
+
+```bash
+# In the Gateway tmux pane: Ctrl+C to stop, then restart
+hermes gateway
+
+# With a specific profile
+hermes gateway -p work
+```
+
+### 2. CLI Sessions
+
+CLI sessions (`hermes` command) auto-reconnect after bus disconnect. To force immediate reload:
+
+```bash
+# In the CLI session
+/restart
+```
+
+### What does NOT need restart
+
+- **hermes-busd** (bus daemon) — pure transport layer, does not load plugin code. Plugin upgrades don't require daemon restart.
+- If `hermes-bus` package was upgraded, run `hermes-busd restart`
+
+### Verify
+
+```bash
+# Confirm bus endpoints are registered
+hermes-busd status
+
+# Confirm messages are deliverable
+notify-hermes --to hermes-bus-gateway --channel weixin "ping"
+```
 
 ## Requirements
 
