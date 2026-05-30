@@ -22,6 +22,10 @@ BUS_SEND = {
                 "type": "string",
                 "description": "Message body text",
             },
+            "channel": {
+                "type": "string",
+                "description": "Push channel (e.g. 'weixin:<chat_id>') — routes through Gateway adapter",
+            },
         },
         "required": ["target", "type", "text"],
     },
@@ -44,9 +48,14 @@ def handle_bus_send(_tool_args: dict | None = None, **kwargs) -> str:
     target = _tool_args.get("target", "")
     msg_type = _tool_args.get("type", "")
     text = _tool_args.get("text", "")
+    channel = _tool_args.get("channel", "")
     import subprocess
+    cmd = ["notify-hermes", "--to", target, "--type", msg_type]
+    if channel:
+        cmd.extend(["--channel", channel])
+    cmd.append(text)
     result = subprocess.run(
-        ["notify-hermes", "--to", target, "--type", msg_type, text],
+        cmd,
         capture_output=True, text=True, timeout=10,
     )
     if result.returncode != 0:
@@ -57,8 +66,8 @@ def handle_bus_send(_tool_args: dict | None = None, **kwargs) -> str:
 def handle_bus_status(_tool_args: dict | None = None, **kwargs) -> str:
     """Check if bus socket exists and list registered endpoints."""
     import os, json, socket, struct
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    sock_path = os.path.join(home, "hermes-bus.sock")
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    sock_path = os.path.join(root, "hermes-bus.sock")
     if not os.path.exists(sock_path):
         return "Bus socket not found (not running)"
 
@@ -100,8 +109,8 @@ BUS_INFO = {
 def handle_bus_info(_tool_args: dict | None = None, **kwargs) -> str:
     """Show current bus connection info."""
     import os, json, socket, struct
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    sock_path = os.path.join(home, "hermes-bus.sock")
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    sock_path = os.path.join(root, "hermes-bus.sock")
 
     endpoint = os.environ.get("HERMES_BUS_PLUGIN_ENDPOINT", "not set")
     sid = os.environ.get("HERMES_BUS_PLUGIN_SID", "")

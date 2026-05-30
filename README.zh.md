@@ -30,15 +30,61 @@ cp -r hermes-bus-plugin ~/.hermes/hermes-agent/plugins/
 hermes plugins enable hermes-bus-plugin
 ```
 
-## 会话命名
+### Profile 多配置
 
-每个 CLI 窗口启动时自动注册唯一总线端点。首个会话默认端点 `hermes-bus`，后续会话自动递增后缀（`hermes-bus-2`、`hermes-bus-3`...）。用 Hermes 的 `/title` 命令设置持久名称：
+Hermes 支持通过 `HERMES_HOME` 环境变量指向不同 profile 目录，每个 profile 拥有独立的配置和插件列表。
 
 ```bash
-/title my-agent-name
+# 创建 work profile
+hermes profile create work
+
+# 在该 profile 中启用插件
+hermes plugins enable hermes-bus-plugin
+
+# 该 profile 的 bus-rules.yaml 需要单独配置
+cp ~/.hermes/bus-rules.yaml ~/.hermes/profiles/work/bus-rules.yaml
 ```
 
-插件会以 `/title` 设置的名称为端点名注册。
+每个 profile 有独立的：
+- **插件列表** — `plugins/` 目录，互不干扰
+- **bus-rules.yaml** — 路由规则独立配置，不同 profile 可定义不同的回调规则
+- **端点命名** — profile 名自动作为总线端点前缀（如 `work-gateway`）
+
+但所有 profile **共享同一个总线守护进程**（socket 位于 `HERMES_BUS_ROOT`，默认 `~/.hermes/hermes-bus.sock`），消息可跨 profile 互通。
+
+## 会话命名
+
+每个 CLI/Gateway 会话启动时自动注册唯一总线端点。
+
+### 默认端点名
+
+| Profile | CLI 模式 | Gateway 模式 |
+|---------|----------|--------------|
+| 默认（`~/.hermes`） | `hermes-bus` | `hermes-bus-gateway` |
+| `work`（`~/.hermes/profiles/work`） | `work` | `work-gateway` |
+
+多个 CLI 会话自动递增后缀：`hermes-bus-2`、`hermes-bus-3`...
+
+### 自定义端点名
+
+两种配置方式，按优先级排列：
+
+**1. 环境变量**（最高优先级）：
+
+```bash
+export HERMES_BUS_ENDPOINT=my-endpoint
+# CLI → my-endpoint，Gateway → my-endpoint-gateway
+```
+
+**2. 配置文件** — 在 `$HERMES_HOME/bus-rules.yaml` 中添加：
+
+```yaml
+bus:
+  endpoint: my-endpoint
+# CLI → my-endpoint，Gateway → my-endpoint-gateway
+```
+
+都未设置时使用 profile 名作为默认值（如默认 profile → `hermes-bus`）。
 
 | 行为 | 时机 | 说明 |
 |------|------|------|
@@ -52,13 +98,22 @@ hermes plugins enable hermes-bus-plugin
 
 启用后，对话中可使用以下工具：
 
-**bus_send** — 发消息到总线任意端点
+**bus_send** — 发消息到总线任意端点，支持 `--channel` 推送
 **bus_status** — 查看总线状态和已连接端点
 **bus_info** — 查看当前会话总线连接详情
 
+### bus_send 参数
+
+| 参数 | 必需 | 说明 |
+|------|------|------|
+| `target` | 是 | 目标总线端点名 |
+| `type` | 是 | 消息类型，匹配 `bus-rules.yaml` 的 `match_type` |
+| `text` | 是 | 消息正文 |
+| `channel` | 否 | 推送通道（`平台:chat_id`），通过 Gateway 适配器发出 |
+
 ## 路由规则
 
-总线消息按 `~/.hermes/bus-rules.yaml` 规则匹配。每条规则可触发三项独立行为：
+总线消息按 `$HERMES_HOME/bus-rules.yaml` 规则匹配（默认路径 `~/.hermes/bus-rules.yaml`）。每条规则可触发三项独立行为：
 
 | 字段 | 行为 | 默认值 |
 |------|------|--------|
@@ -160,6 +215,60 @@ callbacks:
 **协议错误**
 - 打字替代 notify-hermes：在 tmux 里打字说收到/干完了不跑总线 → 收不到
 - channel 混在正文里：`--channel` 是参数，不是消息内容
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `HERMES_BUS_ROOT` | `~/.hermes` | 总线 socket 和运行目录根路径（跨 profile 共享） |
+| `HERMES_BUS_ENDPOINT` | *(自动)* | 覆盖总线端点名 |
+| `HERMES_HOME` | `~/.hermes` | Hermes 配置主目录（可指向 profile 子目录） |
+
+> **注意：** `HERMES_BUS_ROOT` 与 `HERMES_HOME` 分离。总线 socket 始终位于 `HERMES_BUS_ROOT`（默认 `~/.hermes`），而 `HERMES_HOME` 可指向 profile 子目录（如 `~/.hermes/profiles/work`）。这确保所有 profile 共享一个总线守护进程。
+
+## 重启顺序
+
+升级包或修改配置后，需按以下顺序重启进程使改动生效：
+
+```
+升级/改配置 → 重启 Gateway → CLI 会话重连（自动）
+```
+
+### 1. 重启 Gateway
+
+```bash
+# 在 Gateway 所在 tmux 窗格中 Ctrl+C 停止，然后重新启动
+hermes gateway
+
+# 如果有多个 profile 的 Gateway
+hermes gateway -p work
+```
+
+Gateway 重启后会重新加载 `hermes-bus-plugin` 模块。
+
+### 2. CLI 会话自动重连
+
+CLI 会话（`hermes` 命令）内的 bus-plugin 在检测到总线断连后会自动重连。无需手动操作。如需立即生效：
+
+```bash
+# 在 CLI 会话中执行
+/restart
+```
+
+### 不需要重启的
+
+- **hermes-busd**（总线守护进程）— 纯传输层，不加载插件代码，升级插件无需重启
+- 如果升级了 `hermes-bus` 包，则需 `hermes-busd restart`
+
+### 验证
+
+```bash
+# 确认总线端点已注册
+hermes-busd status
+
+# 确认消息可送达
+notify-hermes --to hermes-bus-gateway --channel weixin "ping"
+```
 
 ## 依赖
 
