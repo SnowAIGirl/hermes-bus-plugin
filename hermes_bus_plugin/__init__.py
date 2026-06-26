@@ -31,8 +31,8 @@ ENV_SID = "HERMES_BUS_PLUGIN_SID"
 
 def _get_profile_name() -> str:
     """Extract profile name from HERMES_HOME. Returns 'hermes-bus' for default profile."""
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    profiles_root = os.path.join(os.path.expanduser("~/.hermes"), "profiles")
+    home = os.environ.get("HERMES_HOME", os.path.join(_real_home(), ".hermes"))
+    profiles_root = os.path.join(os.path.join(_real_home(), ".hermes"), "profiles")
     if home.startswith(profiles_root):
         name = os.path.basename(home)
         if name:
@@ -40,14 +40,32 @@ def _get_profile_name() -> str:
     return "hermes-bus"
 
 
+def _real_home() -> str:
+    """Get real user home directory, immune to $HOME changes by sandboxes.
+
+    os.path.expanduser('~') reads $HOME which terminal/container sandboxes
+    may override.  pwd.getpwuid reads the user database directly.
+    """
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except Exception:
+        return os.path.expanduser("~")
+
+
 def _get_bus_root() -> str:
-    """Return the shared bus socket root (always ~/.hermes, not profile-scoped)."""
-    return os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    """Return the shared bus socket root (always ~/.hermes, not profile-scoped).
+
+    Uses real home dir so terminal sandboxes that override $HOME don't
+    create isolated bus sockets in the wrong location.
+    """
+    return os.environ.get("HERMES_BUS_ROOT",
+                          os.path.join(_real_home(), ".hermes"))
 
 
 def _read_config_endpoint() -> str:
     """Read bus.endpoint from bus-rules.yaml. Returns '' if not configured."""
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    home = os.environ.get("HERMES_HOME", os.path.join(_real_home(), ".hermes"))
     config_path = os.path.join(home, "bus-rules.yaml")
     if not os.path.exists(config_path):
         return ""
