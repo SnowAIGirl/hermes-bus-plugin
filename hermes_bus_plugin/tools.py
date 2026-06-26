@@ -1,5 +1,17 @@
 """Bus message tools — send, status, info."""
 
+import os as _os
+
+
+def _real_home() -> str:
+    """Get real user home directory, immune to sandbox $HOME overrides."""
+    try:
+        import pwd
+        return pwd.getpwuid(_os.getuid()).pw_dir
+    except Exception:
+        return _os.path.expanduser("~")
+
+
 BUS_SEND = {
     "name": "bus_send",
     "description": (
@@ -66,7 +78,7 @@ def handle_bus_send(_tool_args: dict | None = None, **kwargs) -> str:
 def handle_bus_status(_tool_args: dict | None = None, **kwargs) -> str:
     """Check if bus socket exists and list registered endpoints."""
     import os, json, socket, struct
-    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.join(_real_home(), ".hermes"))
     sock_path = os.path.join(root, "hermes-bus.sock")
     if not os.path.exists(sock_path):
         return "Bus socket not found (not running)"
@@ -109,7 +121,7 @@ BUS_INFO = {
 def handle_bus_info(_tool_args: dict | None = None, **kwargs) -> str:
     """Show current bus connection info."""
     import os, json, socket, struct
-    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.join(_real_home(), ".hermes"))
     sock_path = os.path.join(root, "hermes-bus.sock")
 
     endpoint = os.environ.get("HERMES_BUS_PLUGIN_ENDPOINT", "not set")

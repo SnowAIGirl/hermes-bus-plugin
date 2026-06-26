@@ -11,6 +11,16 @@ import threading
 import time
 from datetime import datetime
 
+
+def _real_home() -> str:
+    """Get real user home directory, immune to sandbox $HOME overrides."""
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except Exception:
+        return os.path.expanduser("~")
+
+
 _bus_messages = []
 _print_messages = []  # messages to print on next safe hook
 _msg_lock = threading.Lock()
@@ -21,6 +31,24 @@ _gateway_trigger_in_progress = False
 # Source line inject-once guard: CLI agents need to know their endpoint,
 # but injecting every turn wastes tokens. Inject once, first LLM call.
 _source_line_injected = False
+
+# ── Rate-limited trigger queue ──
+# GW-trigger pushes to WeChat via iLink which rate-limits aggressively.
+# Instead of firing immediately (or debouncing per-sender), use a single
+# global queue with a minimum interval between triggers.  Burst messages
+# arriving inside the window are merged; if messages arrive after the
+# window closes they wait in the queue until the interval expires.
+import collections
+import queue as _stdlib_queue
+
+_RATE_LIMIT_INTERVAL = 30.0  # minimum seconds between WeChat pushes
+
+# (endpoint, channel, ctx_line) tuples
+_trigger_queue: _stdlib_queue.Queue = _stdlib_queue.Queue()
+_trigger_last_fire: float = 0.0
+_trigger_timer: threading.Timer | None = None
+_trigger_lock = threading.Lock()
+_trigger_loop_started = False
 
 # Notify config cache
 _notify_config = None
@@ -33,7 +61,7 @@ from . import _log
 def _load_notify_config() -> dict:
     """Load and cache bus-rules.yaml (or fallback to notify.yaml), refetch if file changed."""
     global _notify_config, _notify_config_mtime
-    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    home = os.environ.get("HERMES_HOME", os.path.join(_real_home(), ".hermes"))
     path = os.path.join(home, "bus-rules.yaml")
     if not os.path.exists(path):
         return {"callbacks": []}
@@ -357,6 +385,154 @@ def _run_command(rule: dict, msg: dict):
         _log(f"Command failed for [{msg_type}]: {e}")
 
 
+def _start_trigger_consumer():
+    """Background thread: drain the trigger queue at a fixed rate.
+
+    Merges all pending items into one LLM trigger, then waits for the
+    rate-limit interval before firing the next batch.  This caps WeChat
+    pushes at ~1 per _RATE_LIMIT_INTERVAL seconds regardless of inbound
+    message rate.
+    """
+    global _trigger_loop_started, _trigger_last_fire
+    if _trigger_loop_started:
+        return
+    _trigger_loop_started = True
+
+    def _consumer():
+        global _trigger_last_fire
+        while True:
+            # Block until at least one item arrives
+            first = _trigger_queue.get()
+
+            # Drain all currently queued items
+            items = [first]
+            while True:
+                try:
+                    items.append(_trigger_queue.get_nowait())
+                except _stdlib_queue.Empty:
+                    break
+
+            # Merge all context lines, prefixing each with its arrival timestamp
+            merged_lines: list[str] = []
+            channels: set[str] = set()
+            for _ep, _ch, _line, _ts in items:
+                channels.add(_ch)
+                if _line and _line.strip():
+                    from datetime import datetime
+                    _ts_str = datetime.fromtimestamp(_ts).strftime("[%Y-%m-%d %H:%M:%S]")
+                    merged_lines.append(f"{_ts_str} {_line.strip()}")
+
+            if not merged_lines:
+                continue
+
+            # Use the first non-empty channel
+            channel = next(iter(channels), "")
+            if not channel:
+                # Try auto-resolve
+                try:
+                    from gateway.run import _gateway_runner_ref as _gwref
+                    _r = _gwref() if _gwref else None
+                    if _r is not None and hasattr(_r, "adapters"):
+                        for _plat, _adp in _r.adapters.items():
+                            _acct = getattr(_adp, "_account_id", None) or ""
+                            if _acct:
+                                channel = _plat.value
+                                break
+                except Exception:
+                    pass
+
+            if not channel:
+                _log("[gw-trigger] consumer: no channel, dropping batch")
+                continue
+
+            # ── Wait for rate-limit interval ──
+            with _trigger_lock:
+                elapsed = time.time() - _trigger_last_fire
+                wait = _RATE_LIMIT_INTERVAL - elapsed
+            if wait > 0:
+                _log(f"[gw-trigger] consumer: rate-limit wait {wait:.1f}s")
+                time.sleep(wait)
+
+            # ── Resolve platform + chat_id ──
+            platform_name, _, chat_id = channel.partition(":")
+            if not chat_id:
+                if platform_name in ("weixin", "telegram"):
+                    for suffix in ("_HOME_CHANNEL", "_ACCOUNT_ID", "_HOME_ROOM"):
+                        chat_id = os.environ.get(f"{platform_name.upper()}{suffix}", "")
+                        if chat_id:
+                            break
+            if not chat_id:
+                _log(f"[gw-trigger] consumer: no chat_id for {platform_name}")
+                continue
+
+            # ── Build event ──
+            try:
+                import asyncio as _asyncio
+                from gateway.run import _gateway_runner_ref as _gwref2
+                from gateway.config import Platform
+                from gateway.session import SessionSource
+                from gateway.platforms.base import MessageEvent
+
+                runner = _gwref2() if _gwref2 else None
+                if runner is None:
+                    _log("[gw-trigger] consumer: runner is None")
+                    continue
+
+                platform = Platform(platform_name)
+                source = SessionSource(platform=platform, chat_id=chat_id, user_id=chat_id)
+
+                merged_text = "\n\n".join(merged_lines)
+                event = MessageEvent(text=merged_text, source=source)
+                _log(f"[gw-trigger] consumer: firing {len(merged_lines)} merged lines → {merged_text[:80]}...")
+
+                adapter = runner.adapters.get(platform) if hasattr(runner, "adapters") else None
+                if adapter is None:
+                    _log(f"[gw-trigger] consumer: no adapter for {platform_name}")
+                    continue
+
+                runner_loop = getattr(runner, "_gateway_loop", None)
+                if runner_loop is None or runner_loop.is_closed():
+                    _log("[gw-trigger] consumer: runner_loop None or closed")
+                    continue
+            except Exception as e:
+                _log(f"[gw-trigger] consumer: setup failed — {e}")
+                continue
+
+            # ── Fire ──
+            global _gateway_trigger_in_progress
+            async def _trigger():
+                nonlocal merged_lines, channel
+                _gateway_trigger_in_progress = True
+                ok = False
+                try:
+                    response = await runner._handle_message(event)
+                    _log(f"[gw-trigger] consumer: response={len(response) if response else 0} chars")
+                    if response:
+                        result = await adapter.send(chat_id=chat_id, content=response)
+                        ok = getattr(result, "success", False) or bool(result)
+                        if not ok and platform_name == "dingtalk":
+                            ok = await _dingtalk_openapi_send(chat_id, response)
+                        _log(f"[gw-trigger] consumer: send ok={ok}")
+                except Exception as e:
+                    _log(f"[gw-trigger] consumer: trigger failed — {e}")
+                finally:
+                    _gateway_trigger_in_progress = False
+
+                # ── Re-queue on failure: don't lose messages ──
+                if not ok and response and merged_lines:
+                    _log(f"[gw-trigger] consumer: send failed, re-queuing {len(merged_lines)} items")
+                    for _line in merged_lines:
+                        _trigger_queue.put(("retry", channel, _line, time.time()))
+
+            with _trigger_lock:
+                _trigger_last_fire = time.time()
+            _asyncio.run_coroutine_threadsafe(_trigger(), runner_loop)
+            _log(f"[gw-trigger] consumer: submitted, merged={len(merged_lines)} items")
+
+    threading.Thread(target=_consumer, daemon=True, name="gw-trigger-consumer").start()
+    _log("[gw-trigger] consumer thread started")
+
+
 def _process_bus_message(msg: dict):
     """Process a single bus message: print, context injection, command execution."""
     if msg.get("type") in ("ping", "pong"):
@@ -396,90 +572,35 @@ def _process_bus_message(msg: dict):
         _log(f"[gw-trigger] pre-check: channel={channel!r} guard={_gateway_trigger_in_progress} _HERMES_GATEWAY={_gw_env}")
 
         gw_triggered = False
-        if channel and not _gateway_trigger_in_progress and _gw_env == "1":
-            _log("[gw-trigger] step=0 conditions met, entering trigger chain")
-
-            try:
-                from gateway.run import _gateway_runner_ref
-                _log("[gw-trigger] step=1 ok — import _gateway_runner_ref")
-            except Exception as e:
-                _log(f"[gw-trigger] step=1 failed — import _gateway_runner_ref: {e}")
-                _gateway_runner_ref = None
-
-            runner = _gateway_runner_ref() if _gateway_runner_ref else None
-            if runner is None:
-                _log("[gw-trigger] step=2 failed — runner is None")
-            else:
-                _log("[gw-trigger] step=2 ok — runner obtained")
-
-                # Step 3: resolve platform + chat_id
-                platform_name, _, chat_id = channel.partition(":")
-                if not chat_id:
-                    if platform_name in ("weixin", "telegram"):
-                        for suffix in ("_HOME_CHANNEL", "_ACCOUNT_ID", "_HOME_ROOM"):
-                            chat_id = os.environ.get(f"{platform_name.upper()}{suffix}", "")
-                            if chat_id:
-                                _log(f"[gw-trigger] step=3 ok — chat_id via {platform_name.upper()}{suffix}={chat_id}")
+        if not _gateway_trigger_in_progress and _gw_env == "1":
+            # ── Resolve channel when sender omitted --channel ──
+            if not channel:
+                try:
+                    from gateway.run import _gateway_runner_ref as _gwref
+                    _r = _gwref() if _gwref else None
+                    if _r is not None and hasattr(_r, "adapters"):
+                        for _plat, _adp in _r.adapters.items():
+                            _acct = getattr(_adp, "_account_id", None) or ""
+                            if _acct:
+                                channel = _plat.value
+                                _log(f"[gw-trigger] auto-resolved channel={channel} from adapter {_plat.value}")
                                 break
-                    else:
-                        _log(f"[gw-trigger] step=3 failed — multi-user platform '{platform_name}' "
-                             f"requires explicit channel=platform:chat_id, got '{channel}'")
-                if not chat_id:
-                    _log(f"[gw-trigger] step=3 failed — no chat_id for platform={platform_name}")
-                else:
-                    try:
-                        import asyncio as _asyncio
-                        from gateway.config import Platform
-                        from gateway.session import SessionSource
-                        from gateway.platforms.base import MessageEvent
+                except Exception as _e:
+                    _log(f"[gw-trigger] auto-resolve channel failed: {_e}")
 
-                        platform = Platform(platform_name)
-                        _log(f"[gw-trigger] step=4 ok — Platform({platform_name})")
-
-                        source = SessionSource(platform=platform, chat_id=chat_id, user_id=chat_id)
-                        _log(f"[gw-trigger] step=5 ok — SessionSource user_id={chat_id[:20]}...")
-
-                        clean_text = re.sub(r"\n?\[channel=[^\]]+\]", "", ctx_line).strip()
-                        event = MessageEvent(text=clean_text, source=source)
-                        _log(f"[gw-trigger] step=6 ok — MessageEvent text={clean_text[:50]}...")
-
-                        adapter = runner.adapters.get(platform) if hasattr(runner, "adapters") else None
-                        if adapter is None:
-                            _log(f"[gw-trigger] step=5b failed — no adapter for platform={platform_name}")
-                        else:
-                            _log(f"[gw-trigger] step=5b ok — adapter obtained for {platform_name}")
-
-                            runner_loop = getattr(runner, "_gateway_loop", None)
-                            if runner_loop is None or runner_loop.is_closed():
-                                _log("[gw-trigger] step=6 failed — runner_loop None or closed")
-                            else:
-                                _log("[gw-trigger] step=6 ok — runner_loop available")
-
-                                async def _trigger():
-                                    _gateway_trigger_in_progress = True
-                                    try:
-                                        response = await runner._handle_message(event)
-                                        _log(f"[gw-trigger] step=9 ok — _handle_message response={len(response) if response else 0} chars")
-                                        if response:
-                                            result = await adapter.send(chat_id=chat_id, content=response)
-                                            ok = getattr(result, "success", False) or bool(result)
-                                            if not ok and platform_name == "dingtalk":
-                                                ok = await _dingtalk_openapi_send(chat_id, response)
-                                            _log(f"[gw-trigger] step=10 done — send ok={ok}")
-                                    except Exception as e:
-                                        _log(f"[gw-trigger] step=9-10 failed — {e}")
-                                    finally:
-                                        _gateway_trigger_in_progress = False
-
-                            _asyncio.run_coroutine_threadsafe(_trigger(), runner_loop)
-                            _log("[gw-trigger] step=8 ok — coroutine submitted to loop")
-                            gw_triggered = True
-                    except Exception as e:
-                        _log(f"[gw-trigger] step=4-6 failed — {e}")
+            if channel and ctx_line:
+                # ── Rate-limited trigger: push to global queue ──
+                # Consumer thread drains at fixed interval, merging pending
+                # items into one LLM trigger → one WeChat push per interval.
+                _start_trigger_consumer()
+                _trigger_queue.put((from_ep, channel, ctx_line, time.time()))
+                _log(f"[gw-trigger] queued: from={from_ep} channel={channel} qsize={_trigger_queue.qsize()}")
+                gw_triggered = True  # mark as handled (queued)
 
         # Gateway mode: gw-trigger handles full pipeline (LLM + push).
         # CLI mode: inject context for LLM awareness.
-        if not gw_triggered:
+        # Guard: don't double-inject when CLI already handled it via interrupt/pending.
+        if not gw_triggered and not cli_triggered:
             with _msg_lock:
                 _bus_messages.append(ctx_line)
 
@@ -530,7 +651,7 @@ def ensure_bus_running():
 
 
 def _check_socket_alive() -> bool:
-    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.join(_real_home(), ".hermes"))
     sock_path = os.path.join(root, "hermes-bus.sock")
     _log(f"_check_socket_alive: {sock_path} exists={os.path.exists(sock_path)}")
     try:
@@ -596,7 +717,7 @@ def on_post_tool_call(tool_name: str = "", result: str = "", **kwargs):
 
 def listen_bus(endpoint: str = "hermes-bus"):
     """Background thread: connect, register, listen."""
-    root = os.environ.get("HERMES_BUS_ROOT", os.path.expanduser("~/.hermes"))
+    root = os.environ.get("HERMES_BUS_ROOT", os.path.join(_real_home(), ".hermes"))
     sock_path = os.path.join(root, "hermes-bus.sock")
     reconnect_delay = 5
     was_connected = False
